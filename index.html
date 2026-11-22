@@ -22,6 +22,11 @@
   button.danger{color:var(--acc);border-color:#e8c4bb}
   header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 14px;background:#fff;border-bottom:1px solid var(--line)}
   header h1{font-size:16px;margin:0 auto 0 0;letter-spacing:.02em}
+  .proj{display:flex;gap:6px;align-items:center}
+  .proj .plabel{font-size:13px;color:var(--muted)}
+  .proj select{max-width:min(46vw,360px);padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#fff;font-weight:600}
+  body.standalone .proj{display:none}
+  @media(max-width:600px){header h1{display:none}.proj{margin-right:auto}}
   .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:#fff}
   .seg button{border:0;border-radius:0;padding:6px 12px}
   .seg button.on{background:var(--ink);color:#fff}
@@ -127,6 +132,7 @@
 <body>
 <header>
   <h1>樂譜 × 演奏影片對照</h1>
+  <div class="proj" id="projBar"><span class="plabel">曲目</span><select id="projSel" aria-label="選擇曲目"></select><button id="projMenu" aria-label="曲目選項">⋯</button></div>
   <div class="seg" id="modeSeg">
     <button data-m="play" class="on">播放</button>
     <button data-m="mark">標記</button>
@@ -181,7 +187,7 @@
         <div class="row" style="display:flex;gap:8px;flex-wrap:wrap">
           <button id="exportBtn">產生備份文字</button>
           <button id="importBtn">貼上備份來匯入</button>
-          <button id="resetBtn" class="danger">清除全部</button>
+          <button id="resetBtn" class="danger">清空這首曲目</button>
         </div>
         <div class="hint">資料只存在這台裝置的這個瀏覽器。備份文字裡有標記點和筆記（不含樂譜和影片），換裝置時先放好同一份樂譜，再貼上匯入即可。</div>
         <div id="ioArea"></div>
@@ -237,8 +243,13 @@ function idbGet(k){ return new Promise(res => { if (!db) return res(null); try {
 function idbSet(k, v){ return new Promise(res => { if (!db) return res(false); try { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(true); t.onerror = () => res(false); t.onabort = () => res(false); } catch(e){ res(false); } }); }
 function idbDel(k){ return new Promise(res => { if (!db) return res(); try { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').delete(k); t.oncomplete = () => res(); t.onerror = () => res(); } catch(e){ res(); } }); }
 let saveTimer = null;
+let P = { list: [], current: null };
+const metaKey = () => P.current ? 'meta:' + P.current : 'meta';
+function metaNow(){ return { pageIds: S.pages.map(p => p.id), versions: S.versions, markers: S.markers, cur: S.cur, zoom: S.zoom, follow: S.follow, rate: S.rate, audioOnly: S.audioOnly, fit: S.fit }; }
+async function flushSave(){ clearTimeout(saveTimer); if (!STANDALONE && P.list.some(p => p.id === P.current)) await idbSet(metaKey(), metaNow()); }
 function save(){ try { renderMList(); } catch(e){} clearTimeout(saveTimer); saveTimer = setTimeout(() => {
-  idbSet('meta', { pageIds: S.pages.map(p => p.id), versions: S.versions, markers: S.markers, cur: S.cur, zoom: S.zoom, follow: S.follow, rate: S.rate, audioOnly: S.audioOnly, fit: S.fit });
+  if (!STANDALONE && P.list.length && !P.list.some(p => p.id === P.current)) return;
+  idbSet(metaKey(), { pageIds: S.pages.map(p => p.id), versions: S.versions, markers: S.markers, cur: S.cur, zoom: S.zoom, follow: S.follow, rate: S.rate, audioOnly: S.audioOnly, fit: S.fit });
 }, 300); }
 
 /* ---------- ui helpers ---------- */
@@ -644,7 +655,7 @@ $('#importBtn').onclick = () => {
   };
 };
 $('#resetBtn').onclick = async () => {
-  if (!(await ask('清除所有樂譜、版本和標記點？這個動作無法復原。', '全部清除'))) return;
+  if (!(await ask('清空這首曲目的樂譜、版本和標記點？這個動作無法復原。', '清空'))) return;
   for (const p of S.pages) idbDel('page:' + p.id);
   for (const v of S.versions) idbDel('video:' + v.id);
   Object.values(pageUrls).concat(Object.values(videoUrls)).forEach(u => URL.revokeObjectURL(u));
@@ -662,15 +673,16 @@ function b64ToBlob(b64, mime){
 }
 async function loadPack(meta, getMedia, persist){
   if (!meta || meta.app !== 'score-video-sync' || !meta.pages) throw new Error('bad');
-  if (persist) { for (const p of S.pages) idbDel('page:' + p.id); for (const v of S.versions) idbDel('video:' + v.id); }
-  [pageUrls, videoUrls].forEach(o => { for (const k in o) { URL.revokeObjectURL(o[k]); delete o[k]; } });
-  [pageBlobs, videoBlobs].forEach(o => { for (const k in o) delete o[k]; });
-  S.pages = [];
-  for (const id of meta.pages) { const m = getMedia(id); if (!m) continue; const b = b64ToBlob(m.b64, m.mime); S.pages.push({ id }); pageUrls[id] = URL.createObjectURL(b); pageBlobs[id] = b; if (persist) await idbSet('page:' + id, b); }
-  S.versions = (meta.versions || []).map(v => ({ id: v.id, name: v.name, fileName: v.fileName, kind: v.kind }));
-  for (const v of S.versions) { const m = getMedia(v.id); if (!m) continue; const b = b64ToBlob(m.b64, guessMime(v.fileName) || m.mime); videoUrls[v.id] = URL.createObjectURL(b); videoBlobs[v.id] = b; if (persist) await idbSet('video:' + v.id, b); }
-  const ids = new Set(S.pages.map(p => p.id)); S.markers = (meta.markers || []).filter(m => ids.has(m.page));
-  S.cur = S.versions.find(v => v.id === meta.cur) ? meta.cur : (S.versions[0] ? S.versions[0].id : null);
+  resetState();
+  const map = {}; const nid = id => persist ? (map[id] = map[id] || uid()) : id;
+  for (const oid of meta.pages) { const m = getMedia(oid); if (!m) continue; const id = nid(oid); const b = b64ToBlob(m.b64, m.mime); S.pages.push({ id }); pageUrls[id] = URL.createObjectURL(b); pageBlobs[id] = b; if (persist) await idbSet('page:' + id, b); }
+  S.versions = (meta.versions || []).map(v => ({ id: nid(v.id), name: v.name, fileName: v.fileName, kind: v.kind, _old: v.id }));
+  for (const v of S.versions) { const m = getMedia(v._old); delete v._old; if (!m) continue; const b = b64ToBlob(m.b64, guessMime(v.fileName) || m.mime); videoUrls[v.id] = URL.createObjectURL(b); videoBlobs[v.id] = b; if (persist) await idbSet('video:' + v.id, b); }
+  const ids = new Set(S.pages.map(p => p.id));
+  S.markers = (meta.markers || []).map(m => { const times = {}; for (const k in m.times) times[persist ? nid(k) : k] = m.times[k]; return { ...m, id: persist ? uid() : m.id, page: persist ? map[m.page] : m.page, times }; }).filter(m => ids.has(m.page));
+  const cur = persist ? map[meta.cur] : meta.cur;
+  S.cur = S.versions.find(v => v.id === cur) ? cur : (S.versions[0] ? S.versions[0].id : null);
+  S.follow = meta.follow !== false; S.audioOnly = !!meta.audioOnly; S.fit = meta.fit;
   S.zoom = meta.zoom || 100; S.rate = meta.rate || 1;
 }
 async function offerDownload(blob, filename){
@@ -694,7 +706,7 @@ $('#packBtn').onclick = async () => {
   if (!(await ask(msg, '匯出'))) return;
   const st = $('#packStatus'); st.textContent = '打包中…';
   try {
-    const meta = { app: 'score-video-sync', v: 2, pages: S.pages.map(p => p.id), versions: S.versions.map(v => ({ id: v.id, name: v.name, fileName: v.fileName, kind: v.kind })), markers: S.markers, cur: S.cur, zoom: S.zoom, rate: S.rate };
+    const meta = { app: 'score-video-sync', v: 3, name: projName(), pages: S.pages.map(p => p.id), versions: S.versions.map(v => ({ id: v.id, name: v.name, fileName: v.fileName, kind: v.kind })), markers: S.markers, cur: S.cur, zoom: S.zoom, rate: S.rate, follow: S.follow, audioOnly: S.audioOnly, fit: S.fit };
     const i = TEMPLATE.indexOf('</head>');
     const parts = [TEMPLATE.slice(0, i), '<script type="application/json" id="embedded">', JSON.stringify(meta).replace(/</g, '\\u003c'), '<\/script>\n'];
     const media = S.pages.map(p => [p.id, pageBlobs[p.id]]).concat(S.versions.map(v => [v.id, videoBlobs[v.id]])).filter(x => x[1]);
@@ -708,12 +720,11 @@ $('#packBtn').onclick = async () => {
     parts.push(TEMPLATE.slice(i));
     const out = new Blob(parts, { type: 'text/html' });
     st.textContent = STANDALONE ? $('#packStatus').dataset.note || '' : '';
-    await offerDownload(out, `樂譜影片對照-${new Date().toISOString().slice(0, 10)}.html`);
+    await offerDownload(out, `${(projName() || '樂譜影片對照').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)}.html`);
   } catch(e) { st.textContent = ''; toast('打包失敗，可能是影片太大', 3500); }
 };
 $('#openPack').addEventListener('change', async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
-  if ((S.pages.length || S.versions.length) && !(await ask('載入這個檔案會取代目前的樂譜、版本和標記，要繼續嗎？', '載入'))) return;
   const st = $('#packStatus'); st.textContent = '讀取中…';
   try {
     const text = await f.text();
@@ -721,31 +732,105 @@ $('#openPack').addEventListener('change', async e => {
     if (!mm) throw new Error('no data');
     const media = {}; const re = /<script type="application\/octet-base64" id="m-([^"]+)" data-mime="([^"]*)">([^<]*)<\/script>/g; let r;
     while ((r = re.exec(text))) media[r[1]] = { mime: r[2], b64: r[3] };
-    await loadPack(JSON.parse(mm[1]), id => media[id], true);
-    save(); renderScore(); renderThumbs(); renderVList(); renderTabs(); loadVideo(); updateInfo();
-    $('#zoom').value = S.zoom; $('#zoomVal').textContent = S.zoom + '%'; $('#rate').value = String(S.rate);
-    st.textContent = ''; toast('已載入，資料也存進這台裝置了');
+    const meta = JSON.parse(mm[1]);
+    const name = uniqueName(meta.name || f.name.replace(/\.html?$/i, '') || '匯入的曲目');
+    await flushSave(); video.pause();
+    const pid = uid(); P.list.push({ id: pid, name }); P.current = pid; await idbSet('projects', P);
+    await loadPack(meta, id => media[id], true);
+    await flushSave(); renderAll();
+    st.textContent = ''; toast(`已新增曲目「${name}」，資料也存進這台裝置了`, 3500);
   } catch(err) { st.textContent = ''; toast('無法讀取：不是這個工具匯出的檔案，或檔案太大', 3500); }
 });
+
+/* ---------- songs (projects) ---------- */
+function projName(){ const p = P.list.find(x => x.id === P.current); return p ? p.name : ''; }
+function uniqueName(n){ let name = n, i = 2; while (P.list.some(p => p.name === name)) name = `${n} (${i++})`; return name; }
+function resetState(){
+  [pageUrls, videoUrls].forEach(o => { for (const k in o) { URL.revokeObjectURL(o[k]); delete o[k]; } });
+  [pageBlobs, videoBlobs].forEach(o => { for (const k in o) delete o[k]; });
+  S.pages = []; S.versions = []; S.markers = []; S.cur = null; S.zoom = 100; S.follow = true; S.rate = 1; S.audioOnly = false; S.fit = undefined; S.loop = false;
+  seg = null; activeId = null;
+}
+async function loadProjectData(key){
+  resetState();
+  const meta = await idbGet(key);
+  if (!meta) return;
+  S.versions = meta.versions || []; S.markers = meta.markers || []; S.cur = meta.cur || (S.versions[0] ? S.versions[0].id : null);
+  S.zoom = meta.zoom || 100; S.follow = meta.follow !== false; S.rate = meta.rate || 1; S.audioOnly = !!meta.audioOnly; S.fit = meta.fit;
+  for (const id of meta.pageIds || []) { const b = await idbGet('page:' + id); if (b) { S.pages.push({ id }); pageUrls[id] = URL.createObjectURL(b); pageBlobs[id] = b; } }
+  const ids = new Set(S.pages.map(p => p.id)); S.markers = S.markers.filter(m => ids.has(m.page));
+  for (const v of S.versions) { const f = await idbGet('video:' + v.id); if (f) { videoUrls[v.id] = URL.createObjectURL(f); videoBlobs[v.id] = f; } }
+}
+function renderProjects(){
+  $('#projSel').innerHTML = P.list.map(p => `<option value="${p.id}" ${p.id === P.current ? 'selected' : ''}>${esc(p.name)}</option>`).join('') + '<option value="__new">＋ 新增曲目…</option>';
+}
+function renderAll(){
+  $('#zoom').value = S.zoom; $('#zoomVal').textContent = S.zoom + '%';
+  $('#rate').value = String(S.rate); $('#followBtn').classList.toggle('on', S.follow); $('#loopBtn').classList.remove('on');
+  $('#setup').open = !S.pages.length || !S.versions.length;
+  renderScore(); renderThumbs(); renderVList(); renderTabs(); loadVideo(); updateInfo(); renderMList(); renderProjects();
+}
+async function switchProject(pid){
+  if (pid === P.current) return;
+  await flushSave(); video.pause();
+  P.current = pid; await idbSet('projects', P);
+  await loadProjectData(metaKey()); renderAll(); window.scrollTo(0, 0);
+  toast(`已切換到「${projName()}」`);
+}
+function nameDialog(title, value){ return new Promise(res => {
+  modal._onClose = () => res(null);
+  box.innerHTML = `<h3>${esc(title)}</h3><label>曲目名稱<input id="pName" value="${esc(value)}"></label><div class="row"><span class="sp"></span><button data-a="no">取消</button><button data-a="ok" class="pri">確定</button></div>`;
+  modal.classList.remove('hidden'); setTimeout(() => { const i = $('#pName'); i.focus(); i.select(); }, 50);
+  const done = ok => { const v = $('#pName').value.trim(); closeModal(); res(ok && v ? v : null); };
+  box.onclick = e => { const a = e.target.dataset.a; if (a) done(a === 'ok'); };
+  $('#pName').onkeydown = e => { if (e.key === 'Enter') done(true); };
+}); }
+async function newProject(){
+  const name = await nameDialog('新增曲目', uniqueName('新曲目'));
+  if (!name) return renderProjects();
+  const id = uid(); P.list.push({ id, name: uniqueName(name) });
+  await switchProject(id); $('#setup').open = true;
+}
+$('#projSel').addEventListener('change', e => { const v = e.target.value; if (v === '__new') newProject(); else switchProject(v); });
+$('#projMenu').onclick = () => {
+  modal._onClose = null;
+  box.innerHTML = `<h3>${esc(projName())}</h3><div class="row" style="flex-direction:column;align-items:stretch">
+    <button data-a="new">＋ 新增曲目</button><button data-a="rename">重新命名這首曲目</button><button data-a="del" class="danger">刪除這首曲目</button><button data-a="no">取消</button></div>`;
+  modal.classList.remove('hidden');
+  box.onclick = async e => {
+    const a = e.target.dataset.a; if (!a) return; closeModal();
+    if (a === 'new') newProject();
+    else if (a === 'rename') { const n = await nameDialog('重新命名', projName()); if (n) { P.list.find(p => p.id === P.current).name = n; await idbSet('projects', P); renderProjects(); } }
+    else if (a === 'del') {
+      if (!(await ask(`刪除曲目「${projName()}」？裡面的樂譜、影片和標記都會從這台裝置刪除。`, '刪除'))) return;
+      for (const p of S.pages) idbDel('page:' + p.id); for (const v of S.versions) idbDel('video:' + v.id); idbDel(metaKey());
+      P.list = P.list.filter(p => p.id !== P.current);
+      if (!P.list.length) P.list.push({ id: uid(), name: '新曲目' });
+      P.current = null; await switchProject(P.list[0].id);
+    }
+  };
+};
 
 /* ---------- boot ---------- */
 (async function boot(){
   if (STANDALONE) {
     try { await loadPack(JSON.parse(EMB_META), id => EMB_MEDIA[id], false); } catch(e) { toast('檔案內容讀取失敗'); }
     $('#packStatus').textContent = '這是匯出的離線版本：修改不會自動儲存，需要保留時請再「下載完整檔案」一次。';
-  } else await openDB();
-  const meta = STANDALONE ? null : await idbGet('meta');
-  if (meta) {
-    S.versions = meta.versions || []; S.markers = meta.markers || []; S.cur = meta.cur || S.versions[0]?.id || null;
-    S.zoom = meta.zoom || 100; S.follow = meta.follow !== false; S.rate = meta.rate || 1; S.audioOnly = !!meta.audioOnly; S.fit = meta.fit;
-    for (const id of meta.pageIds || []) { const b = await idbGet('page:' + id); if (b) { S.pages.push({ id }); pageUrls[id] = URL.createObjectURL(b); pageBlobs[id] = b; } }
-    const ids = new Set(S.pages.map(p => p.id)); S.markers = S.markers.filter(m => ids.has(m.page));
-    for (const v of S.versions) { const f = await idbGet('video:' + v.id); if (f) { videoUrls[v.id] = URL.createObjectURL(f); videoBlobs[v.id] = f; } }
+    document.body.classList.add('standalone');
+  } else {
+    await openDB();
+    P = (await idbGet('projects')) || null;
+    if (!P || !P.list || !P.list.length) {
+      const old = await idbGet('meta'); const id = uid();
+      const first = old && old.versions && old.versions[0] ? old.versions[0].name.split(' / ')[0].slice(0, 40) : '';
+      P = { list: [{ id, name: first || '曲目 1' }], current: id };
+      if (old) { await idbSet('meta:' + id, old); await idbDel('meta'); }
+      await idbSet('projects', P);
+    }
+    if (!P.list.find(p => p.id === P.current)) P.current = P.list[0].id;
+    await loadProjectData(metaKey());
   }
-  $('#zoom').value = S.zoom; $('#zoomVal').textContent = S.zoom + '%';
-  $('#rate').value = String(S.rate); $('#followBtn').classList.toggle('on', S.follow);
-  if (!S.pages.length || !S.versions.length) $('#setup').open = true;
-  renderScore(); renderThumbs(); renderVList(); renderTabs(); loadVideo(); updateInfo(); renderMList();
+  renderAll();
   requestAnimationFrame(tick);
 })();
 })();
