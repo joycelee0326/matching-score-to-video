@@ -28,6 +28,7 @@
   #app{display:block}
   #player{position:sticky;top:0;z-index:20;background:var(--dark);color:#eee;padding:8px 10px 10px}
   #player button,#player select{background:#2d2a27;border-color:#45403a;color:#eee}
+  #player button:disabled{opacity:1;cursor:default}
   #player button.on{background:var(--acc2);border-color:var(--acc2)}
   video{width:100%;max-height:32vh;background:#000;display:block;border-radius:6px}
   .novideo{height:120px;display:flex;align-items:center;justify-content:center;color:#aaa;border:1px dashed #555;border-radius:6px;font-size:14px;text-align:center;padding:10px}
@@ -136,7 +137,7 @@
   <section id="player">
     <div id="vidWrap">
       <video id="video" controls playsinline preload="metadata"></video>
-      <div class="novideo" id="novideo">先在「設定」新增演奏版本（選擇影片檔）</div>
+      <div class="novideo" id="novideo">先在「設定」新增演奏版本（影片或音檔）</div>
       <div class="abar" id="abar"><button id="pp" aria-label="播放或暫停">▶</button><input type="range" id="seek" min="0" max="1000" value="0" aria-label="播放位置"><span id="atime">0:00.0</span></div>
     </div>
     <div class="tabs" id="tabs"></div>
@@ -166,7 +167,8 @@
       </div>
       <div class="block">
         <h4>2. 演奏版本</h4>
-        <label class="file"><input type="file" id="videoIn" accept="video/*,audio/*" multiple><span>＋ 新增演奏版本（影片或音檔）</span></label>
+        <label class="file"><input type="file" id="videoIn" accept="video/*" multiple><span>＋ 新增影片版本</span></label>
+        <label class="file"><input type="file" id="audioIn" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.aif,.aiff" multiple><span>＋ 新增音檔版本</span></label>
         <div class="hint">每個檔案是一個版本，可以把名稱改成演奏家的名字。影片會試著存在這個瀏覽器裡，下次打開就不用重新選。</div>
         <div id="vlist" class="block"></div>
       </div>
@@ -404,7 +406,7 @@ function readEditor(m){
 /* ---------- versions & video ---------- */
 function renderTabs(){
   const t = $('#tabs');
-  t.innerHTML = S.versions.map(v => `<button data-v="${v.id}" class="${v.id === S.cur ? 'cur' : ''}">${esc(v.name)}</button>`).join('');
+  t.innerHTML = S.versions.map(v => `<button data-v="${v.id}" class="${v.id === S.cur ? 'cur' : ''}">${isAudioV(v) ? '♪ ' : ''}${esc(v.name)}</button>`).join('');
 }
 $('#tabs').addEventListener('click', e => { const v = e.target.dataset.v; if (v) switchVersion(v); });
 function switchVersion(vid){
@@ -420,12 +422,13 @@ function loadVideo(){
   const url = S.cur ? videoUrls[S.cur] : null;
   $('#novideo').style.display = url ? 'none' : 'flex';
   updateVideoDisplay();
-  if (!S.versions.length) $('#novideo').textContent = '先在「設定」新增演奏版本（選擇影片檔）';
+  if (!S.versions.length) $('#novideo').textContent = '先在「設定」新增演奏版本（影片或音檔）';
   else if (!url) $('#novideo').textContent = '這個版本需要重新選擇影片檔（在「設定」裡）';
   if (url) { if (video.src !== url) video.src = url; } else { video.removeAttribute('src'); video.load(); }
   seg = null; activeId = null; updateInfo();
 }
 video.addEventListener('loadedmetadata', () => {
+  const cv = curV(); if (cv && !cv.kind) { cv.kind = video.videoWidth ? 'video' : 'audio'; save(); renderTabs(); updateVideoDisplay(); }
   video.playbackRate = S.rate; try { video.preservesPitch = true; video.webkitPreservesPitch = true; } catch(e){}
   if (pending) { if (pending.t != null) { seekTo(pending.t); seg = segFromTime(pending.t); } if (pending.play) video.play().catch(() => {}); pending = null; }
 });
@@ -463,7 +466,7 @@ function renderVList(){
 $('#vlist').addEventListener('change', async e => {
   const row = e.target.closest('.vrow'); if (!row) return; const v = S.versions.find(x => x.id === row.dataset.v);
   if (e.target.dataset.a === 'name') { v.name = e.target.value.trim() || v.name; save(); renderTabs(); }
-  if (e.target.dataset.a === 'relink' && e.target.files[0]) { await attachVideo(v, e.target.files[0]); renderVList(); if (v.id === S.cur) loadVideo(); }
+  if (e.target.dataset.a === 'relink' && e.target.files[0]) { v.kind = null; await attachVideo(v, e.target.files[0]); renderVList(); if (v.id === S.cur) loadVideo(); }
 });
 $('#vlist').addEventListener('click', async e => {
   if (e.target.dataset.a !== 'del') return;
@@ -481,16 +484,19 @@ async function attachVideo(v, file){
   save();
   idbSet('video:' + v.id, file).then(ok => { if (!ok) toast('影片太大，無法存進瀏覽器；下次需要重新選擇檔案', 3500); });
 }
-$('#videoIn').addEventListener('change', async e => {
+async function addVersions(e, asAudio){
   const files = [...e.target.files]; e.target.value = '';
   for (const f of files) {
     const v = { id: uid(), name: f.name.replace(/\.[^.]+$/, ''), fileName: f.name };
+    if (asAudio || (f.type || guessMime(f.name)).startsWith('audio')) { v.kind = 'audio'; if (S.fit == null) S.fit = true; }
     S.versions.push(v); await attachVideo(v, f);
     if (!S.cur) S.cur = v.id;
   }
   save(); renderVList(); renderTabs(); refreshMarkers(); loadVideo();
   if (files.length) toast(`已新增 ${files.length} 個版本，可在下方改成演奏家的名字`);
-});
+}
+$('#videoIn').addEventListener('change', e => addVersions(e, false));
+$('#audioIn').addEventListener('change', e => addVersions(e, true));
 
 /* ---------- score pages ---------- */
 async function addPage(blob){
@@ -534,12 +540,17 @@ $('#thumbs').addEventListener('click', async e => {
 
 /* ---------- audio only ---------- */
 let seeking = false;
+function isAudioV(v){ if (!v) return false; if (v.kind) return v.kind === 'audio'; const b = videoBlobs[v.id]; return ((b && b.type) || guessMime(v.fileName) || '').startsWith('audio'); }
 function updateVideoDisplay(){
   const url = S.cur ? videoUrls[S.cur] : null;
-  video.style.display = url && !S.audioOnly ? 'block' : 'none';
-  $('#abar').style.display = url && S.audioOnly ? 'flex' : 'none';
-  $('#audioBtn').classList.toggle('on', !!S.audioOnly);
-  document.body.classList.toggle('audio', !!S.audioOnly);
+  const pureAudio = isAudioV(curV());
+  const audioMode = !!S.audioOnly || pureAudio;
+  video.style.display = url && !audioMode ? 'block' : 'none';
+  $('#abar').style.display = url && audioMode ? 'flex' : 'none';
+  $('#audioBtn').classList.toggle('on', audioMode);
+  $('#audioBtn').disabled = pureAudio;
+  $('#audioBtn').textContent = pureAudio ? '純音檔' : '只聽聲音';
+  document.body.classList.toggle('audio', audioMode);
   requestAnimationFrame(sizePages);
 }
 function sizePages(){
@@ -656,7 +667,7 @@ async function loadPack(meta, getMedia, persist){
   [pageBlobs, videoBlobs].forEach(o => { for (const k in o) delete o[k]; });
   S.pages = [];
   for (const id of meta.pages) { const m = getMedia(id); if (!m) continue; const b = b64ToBlob(m.b64, m.mime); S.pages.push({ id }); pageUrls[id] = URL.createObjectURL(b); pageBlobs[id] = b; if (persist) await idbSet('page:' + id, b); }
-  S.versions = (meta.versions || []).map(v => ({ id: v.id, name: v.name, fileName: v.fileName }));
+  S.versions = (meta.versions || []).map(v => ({ id: v.id, name: v.name, fileName: v.fileName, kind: v.kind }));
   for (const v of S.versions) { const m = getMedia(v.id); if (!m) continue; const b = b64ToBlob(m.b64, guessMime(v.fileName) || m.mime); videoUrls[v.id] = URL.createObjectURL(b); videoBlobs[v.id] = b; if (persist) await idbSet('video:' + v.id, b); }
   const ids = new Set(S.pages.map(p => p.id)); S.markers = (meta.markers || []).filter(m => ids.has(m.page));
   S.cur = S.versions.find(v => v.id === meta.cur) ? meta.cur : (S.versions[0] ? S.versions[0].id : null);
@@ -683,7 +694,7 @@ $('#packBtn').onclick = async () => {
   if (!(await ask(msg, '匯出'))) return;
   const st = $('#packStatus'); st.textContent = '打包中…';
   try {
-    const meta = { app: 'score-video-sync', v: 2, pages: S.pages.map(p => p.id), versions: S.versions.map(v => ({ id: v.id, name: v.name, fileName: v.fileName })), markers: S.markers, cur: S.cur, zoom: S.zoom, rate: S.rate };
+    const meta = { app: 'score-video-sync', v: 2, pages: S.pages.map(p => p.id), versions: S.versions.map(v => ({ id: v.id, name: v.name, fileName: v.fileName, kind: v.kind })), markers: S.markers, cur: S.cur, zoom: S.zoom, rate: S.rate };
     const i = TEMPLATE.indexOf('</head>');
     const parts = [TEMPLATE.slice(0, i), '<script type="application/json" id="embedded">', JSON.stringify(meta).replace(/</g, '\\u003c'), '<\/script>\n'];
     const media = S.pages.map(p => [p.id, pageBlobs[p.id]]).concat(S.versions.map(v => [v.id, videoBlobs[v.id]])).filter(x => x[1]);
@@ -726,7 +737,7 @@ $('#openPack').addEventListener('change', async e => {
   const meta = STANDALONE ? null : await idbGet('meta');
   if (meta) {
     S.versions = meta.versions || []; S.markers = meta.markers || []; S.cur = meta.cur || S.versions[0]?.id || null;
-    S.zoom = meta.zoom || 100; S.follow = meta.follow !== false; S.rate = meta.rate || 1; S.audioOnly = !!meta.audioOnly; S.fit = !!meta.fit;
+    S.zoom = meta.zoom || 100; S.follow = meta.follow !== false; S.rate = meta.rate || 1; S.audioOnly = !!meta.audioOnly; S.fit = meta.fit;
     for (const id of meta.pageIds || []) { const b = await idbGet('page:' + id); if (b) { S.pages.push({ id }); pageUrls[id] = URL.createObjectURL(b); pageBlobs[id] = b; } }
     const ids = new Set(S.pages.map(p => p.id)); S.markers = S.markers.filter(m => ids.has(m.page));
     for (const v of S.versions) { const f = await idbGet('video:' + v.id); if (f) { videoUrls[v.id] = URL.createObjectURL(f); videoBlobs[v.id] = f; } }
